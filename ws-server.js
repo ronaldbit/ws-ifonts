@@ -17,22 +17,31 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // --- Usuario se une al archivo
     if (data.type === "join") {
       user = data.user;
       file = data.file;
       console.log(`${user} se ha unido al archivo ${file}`);
 
       if (!files[file]) {
+        // Si es la primera vez, se guarda el contenido que manda el primer usuario
         files[file] = {
-          content: "",
+          content: data.content || "", // El contenido enviado desde el cliente (PHP)
           clients: new Set(),
           cursors: new Map()
         };
       }
 
       files[file].clients.add(ws);
-      ws.send(JSON.stringify({ type: "content", content: files[file].content, file }));
 
+      // Enviar contenido actual desde memoria
+      ws.send(JSON.stringify({
+        type: "content",
+        content: files[file].content,
+        file: file
+      }));
+
+      // Notificar a otros que alguien se unió
       broadcast(file, {
         type: "join",
         user: user,
@@ -40,8 +49,10 @@ wss.on("connection", (ws) => {
       }, ws);
     }
 
+    // --- Actualización de contenido (editor)
     if (data.type === "content" && file) {
       files[file].content = data.content;
+
       broadcast(file, {
         type: "content",
         content: data.content,
@@ -50,9 +61,11 @@ wss.on("connection", (ws) => {
       }, ws);
     }
 
+    // --- Movimiento de cursor
     if (data.type === "cursor" && file) {
       files[file].cursors.set(user, data.cursor);
       console.log(`Cursor de ${user} en ${file}: Línea ${data.cursor.lineNumber}, Columna ${data.cursor.column}`);
+
       broadcast(file, {
         type: "cursor",
         user: user,
@@ -61,6 +74,7 @@ wss.on("connection", (ws) => {
       }, ws);
     }
 
+    // --- Selección de texto
     if (data.type === "selection" && file) {
       broadcast(file, {
         type: "selection",
@@ -70,6 +84,7 @@ wss.on("connection", (ws) => {
       }, ws);
     }
 
+    // --- Guardar archivo en disco
     if (data.type === "save" && file) {
       fs.writeFile(file, data.content, (err) => {
         if (err) {
@@ -79,57 +94,25 @@ wss.on("connection", (ws) => {
         }
       });
     }
-
-    // 👇 INTEGRACIÓN NUEVA: Solicitud de contenido inicial
-    if (data.type === "get_content") {
-      const requestedFile = data.file;
-
-      if (files[requestedFile]) {
-        ws.send(JSON.stringify({
-          type: "initial_content",
-          user: data.user,
-          file: requestedFile,
-          content: files[requestedFile].content
-        }));
-      } else {
-        fs.readFile(requestedFile, "utf8", (err, fileContent) => {
-          if (err) {
-            console.error(`Error leyendo ${requestedFile}:`, err);
-            ws.send(JSON.stringify({
-              type: "initial_content",
-              user: data.user,
-              file: requestedFile,
-              content: ""
-            }));
-          } else {
-            files[requestedFile] = {
-              content: fileContent,
-              clients: new Set(),
-              cursors: new Map()
-            };
-
-            ws.send(JSON.stringify({
-              type: "initial_content",
-              user: data.user,
-              file: requestedFile,
-              content: fileContent
-            }));
-          }
-        });
-      }
-    }
   });
 
   ws.on("close", () => {
     if (file && files[file]) {
       files[file].clients.delete(ws);
       files[file].cursors.delete(user);
+
       broadcast(file, {
         type: "leave",
         user: user,
         file: file
       });
-      console.log(` ${user} salió del archivo ${file}`);
+
+      console.log(`${user} salió del archivo ${file}`);
+
+      // Eliminar archivo de memoria si no queda nadie
+      if (files[file].clients.size === 0) {
+        delete files[file];
+      }
     }
   });
 });
