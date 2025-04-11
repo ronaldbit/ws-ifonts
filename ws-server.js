@@ -61,6 +61,15 @@ wss.on("connection", (ws) => {
       }, ws);
     }
 
+    if (data.type === "selection" && file) {
+      broadcast(file, {
+        type: "selection",
+        user: user,
+        file: file,
+        selection: data.selection
+      }, ws);
+    }
+    
     if (data.type === "save" && file) {
       fs.writeFile(file, data.content, (err) => {
         if (err) {
