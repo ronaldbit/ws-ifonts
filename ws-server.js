@@ -1,101 +1,82 @@
-const WebSocket = require("ws");
-const server = new WebSocket.Server({ port: process.env.PORT || 8080 });
+const WebSocket = require('ws');
+const wss = new WebSocket.Server({ port: process.env.PORT || 3000 });
 
-let rooms = {};  // Almacena las salas (archivo -> usuarios)
-let filesData = new Map();  // Almacena el contenido de los archivos
+let rooms = {}; // { fileName: { users: Set, content: '...', cursors: {} } }
 
-server.on("connection", (ws) => {
+wss.on('connection', (ws) => {
   let user = null;
-  let room = null;
+  let file = null;
 
-  ws.on("message", (msg) => {
+  ws.on('message', (message) => {
     try {
-      const data = JSON.parse(msg);
+      const data = JSON.parse(message);
 
-      if (data.type === "join") {
-        user = data.user;  // Obtén el usuario desde la sesión PHP
-        room = data.file;
+      if (data.type === 'join') {
+        user = data.user;
+        file = data.file;
 
-        // Si la sala no existe, la creamos
-        if (!rooms[room]) {
-          rooms[room] = [];
+        if (!rooms[file]) {
+          rooms[file] = { users: new Set(), content: '', cursors: {} };
         }
 
-        // Añadimos el usuario a la sala
-        rooms[room].push(ws);
+        rooms[file].users.add(ws);
+        console.log(`👤 ${user} se unió a la sala: ${file}`);
 
-        // Enviar el contenido actual del archivo al usuario
-        if (filesData.has(room)) {
-          ws.send(JSON.stringify({
-            type: "content",
-            content: filesData.get(room),
-            user: "servidor"
-          }));
-        } else {
-          filesData.set(room, "");
+        // Enviar contenido actual a quien se conecta
+        ws.send(JSON.stringify({ type: 'content', content: rooms[file].content, user: 'server' }));
+
+        // Notificar a otros que se unió
+        broadcast(file, { type: 'join', user }, ws);
+      }
+
+      if (data.type === 'content') {
+        if (rooms[file]) {
+          rooms[file].content = data.content;
+          broadcast(file, data, ws); // Reenviar a todos excepto a quien lo envió
         }
-
-        // Notificar a los demás usuarios de la sala que alguien se ha unido
-        broadcast(room, {
-          type: "notice",
-          text: `${user} se unió a "${room}"`,
-        }, ws);
       }
 
-      if (data.type === "content") {
-        filesData.set(room, data.content);
-
-        // Enviar el nuevo contenido a todos los usuarios en la sala
-        broadcast(room, {
-          type: "content",
-          content: data.content,
-          user: user,
-          file: room
-        }, ws);
+      if (data.type === 'cursor') {
+        if (rooms[file]) {
+          rooms[file].cursors[data.user] = data.position;
+          broadcast(file, data, ws); // Enviar posición del cursor
+        }
       }
 
-      if (data.type === "save") {
-        // Lógica para guardar el archivo en el servidor, si se activa la opción
-        require("fs").writeFile(data.file, data.content, (err) => {
-          if (err) {
-            console.error("Error al guardar archivo:", err);
-            return;
-          }
-          broadcast(room, {
-            type: "saved",
-            user: user,
-            file: data.file
-          });
-        });
+      if (data.type === 'save') {
+        // Aquí podrías guardar en archivo si deseas
+        console.log(`💾 ${user} quiere guardar ${file}`);
       }
 
-    } catch (e) {
-      console.error("Error procesando mensaje:", e);
+    } catch (err) {
+      console.error("❌ Error procesando mensaje:", err.message);
     }
   });
 
-  ws.on("close", () => {
-    if (room && user) {
-      // Eliminar el usuario de la sala
-      rooms[room] = rooms[room].filter(client => client !== ws);
-      broadcast(room, {
-        type: "notice",
-        text: `${user} salió de "${room}"`,
-      });
+  ws.on('close', () => {
+    if (rooms[file]) {
+      rooms[file].users.delete(ws);
+      delete rooms[file].cursors?.[user];
+
+      // Notificar a otros que salió
+      broadcast(file, { type: 'leave', user });
+
+      console.log(`❌ ${user} salió de la sala: ${file}`);
+
+      // Eliminar sala si ya no hay nadie
+      if (rooms[file].users.size === 0) {
+        delete rooms[file];
+      }
     }
   });
 });
 
-// Función para enviar mensajes a todos los clientes de la sala
-function broadcast(room, data, except = null) {
-  const msg = JSON.stringify(data);
-  if (rooms[room]) {
-    rooms[room].forEach(client => {
-      if (client.readyState === WebSocket.OPEN && client !== except) {
-        client.send(msg);
-      }
-    });
-  }
+function broadcast(file, data, exclude = null) {
+  if (!rooms[file]) return;
+  const message = JSON.stringify(data);
+  rooms[file].users.forEach((client) => {
+    if (client !== exclude && client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  });
 }
-
-console.log("Servidor WebSocket corriendo en el puerto 8080");
