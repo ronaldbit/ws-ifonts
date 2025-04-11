@@ -1,80 +1,99 @@
-// === ws-server.js ===
+const WebSocket = require("ws");
+const fs = require("fs");
 
-const WebSocket = require('ws');
-const server = new WebSocket.Server({ port: process.env.PORT || 3000 });
+const wss = new WebSocket.Server({ port: process.env.PORT || 3000 });
 
-const clients = new Map(); // ws -> { username, file }
-const filesData = {}; // file -> content
-const cursors = {}; // file -> { user -> { position } }
+const files = {}; // { fileName: { content: string, clients: Set<WebSocket>, cursors: Map<user, {line, col}> } }
 
-function broadcast(file, message, exclude = null) {
-  for (const [client, meta] of clients.entries()) {
-    if (meta.file === file && client.readyState === WebSocket.OPEN && client !== exclude) {
-      client.send(JSON.stringify(message));
-    }
-  }
-}
+wss.on("connection", (ws) => {
+  let user = null;
+  let file = null;
 
-server.on('connection', (ws) => {
-  ws.on('message', (message) => {
+  ws.on("message", (msg) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(msg);
     } catch (e) {
-      console.error("Invalid JSON", e);
       return;
     }
 
-    const { type, user, file } = data;
+    if (data.type === "join") {
+      user = data.user;
+      file = data.file;
+      console.log(`${user} se ha unido al archivo ${file}`);
 
-    if (type === 'join') {
-      clients.set(ws, { username: user, file });
-      if (!filesData[file]) filesData[file] = '';
-      if (!cursors[file]) cursors[file] = {};
+      if (!files[file]) {
+        files[file] = {
+          content: "",
+          clients: new Set(),
+          cursors: new Map()
+        };
+      }
 
-      ws.send(JSON.stringify({ type: 'content', content: filesData[file] }));
+      files[file].clients.add(ws);
+      ws.send(JSON.stringify({ type: "content", content: files[file].content, file }));
 
       broadcast(file, {
-        type: 'notice',
-        text: `${user} se unió al archivo`,
-        user
+        type: "join",
+        user: user,
+        file: file
       }, ws);
     }
 
-    if (type === 'edit') {
+    if (data.type === "content" && file) {
+      files[file].content = data.content;
       broadcast(file, {
-        type: 'edit',
-        changes: data.changes,
-        user,
-        file
+        type: "content",
+        content: data.content,
+        user: user,
+        file: file
       }, ws);
     }
 
-    if (type === 'cursor') {
-      cursors[file][user] = data.position;
+    if (data.type === "cursor" && file) {
+      files[file].cursors.set(user, data.cursor);
+      console.log(`Cursor de ${user} en ${file}: Línea ${data.cursor.lineNumber}, Columna ${data.cursor.column}`);
       broadcast(file, {
-        type: 'cursor',
-        user,
-        position: data.position
+        type: "cursor",
+        user: user,
+        file: file,
+        cursor: data.cursor
       }, ws);
     }
 
-    if (type === 'save') {
-      filesData[file] = data.content;
-      console.log(`Archivo ${file} guardado.`);
+    if (data.type === "save" && file) {
+      fs.writeFile(file, data.content, (err) => {
+        if (err) {
+          console.error(`Error guardando ${file}:`, err);
+        } else {
+          console.log(`${user} guardó ${file}`);
+        }
+      });
     }
   });
 
-  ws.on('close', () => {
-    const meta = clients.get(ws);
-    if (meta) {
-      const { username, file } = meta;
-      delete cursors[file]?.[username];
+  ws.on("close", () => {
+    if (file && files[file]) {
+      files[file].clients.delete(ws);
+      files[file].cursors.delete(user);
       broadcast(file, {
-        type: 'removeCursor',
-        user: username
+        type: "leave",
+        user: user,
+        file: file
       });
-      clients.delete(ws);
+      console.log(` ${user} salió del archivo ${file}`);
     }
   });
 });
+
+function broadcast(file, message, exclude = null) {
+  const fileData = files[file];
+  if (!fileData) return;
+
+  const json = JSON.stringify(message);
+  for (const client of fileData.clients) {
+    if (client !== exclude && client.readyState === WebSocket.OPEN) {
+      client.send(json);
+    }
+  }
+}
