@@ -1,69 +1,69 @@
 const WebSocket = require("ws");
 const server = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
-let clients = new Map(); // cliente -> { username, file }
-let filesData = new Map(); // fileName -> latest content
+let rooms = {};  // Almacena las salas (archivo -> usuarios)
+let filesData = new Map();  // Almacena el contenido de los archivos
 
-// No cambia mucho, solo una mejora en la desconexión.
 server.on("connection", (ws) => {
-  let username = null;
-  let file = null;
+  let user = null;
+  let room = null;
 
   ws.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
 
       if (data.type === "join") {
-        username = data.user;
-        file = data.file;
+        user = data.user;  // Obtén el usuario desde la sesión PHP
+        room = data.file;
 
-        clients.set(ws, { username, file });
+        // Si la sala no existe, la creamos
+        if (!rooms[room]) {
+          rooms[room] = [];
+        }
 
-        if (filesData.has(file)) {
+        // Añadimos el usuario a la sala
+        rooms[room].push(ws);
+
+        // Enviar el contenido actual del archivo al usuario
+        if (filesData.has(room)) {
           ws.send(JSON.stringify({
             type: "content",
-            content: filesData.get(file),
+            content: filesData.get(room),
             user: "servidor"
           }));
         } else {
-          filesData.set(file, "");
+          filesData.set(room, "");
         }
 
-        broadcast(file, {
+        // Notificar a los demás usuarios de la sala que alguien se ha unido
+        broadcast(room, {
           type: "notice",
-          text: `${username} se unió a "${file}"`,
-        }, ws);
-      }
-
-      if (data.type === "cursor") {
-        broadcast(file, {
-          type: "cursor",
-          cursor: data.cursor,
-          user: username,
-          file: data.file
+          text: `${user} se unió a "${room}"`,
         }, ws);
       }
 
       if (data.type === "content") {
-        filesData.set(data.file, data.content);
+        filesData.set(room, data.content);
 
-        broadcast(file, {
+        // Enviar el nuevo contenido a todos los usuarios en la sala
+        broadcast(room, {
           type: "content",
           content: data.content,
-          user: username,
-          file: data.file
+          user: user,
+          file: room
         }, ws);
       }
 
       if (data.type === "save") {
+        // Lógica para guardar el archivo en el servidor, si se activa la opción
         require("fs").writeFile(data.file, data.content, (err) => {
           if (err) {
             console.error("Error al guardar archivo:", err);
             return;
           }
-          broadcast(file, {
+          broadcast(room, {
             type: "saved",
-            user: username,
+            user: user,
             file: data.file
           });
         });
@@ -75,31 +75,26 @@ server.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    const info = clients.get(ws);
-    clients.delete(ws);
-    if (info?.username && info?.file) {
-      broadcast(info.file, {
+    if (room && user) {
+      // Eliminar el usuario de la sala
+      rooms[room] = rooms[room].filter(client => client !== ws);
+      broadcast(room, {
         type: "notice",
-        text: `${info.username} salió de "${info.file}"`,
-      });
-
-      // Broadcast de la desconexión
-      broadcast(info.file, {
-        type: "removeCursor",
-        user: info.username
+        text: `${user} salió de "${room}"`,
       });
     }
   });
 });
 
-
-// Enviar mensaje a todos los clientes que estén en el mismo archivo
-function broadcast(file, data, except = null) {
+// Función para enviar mensajes a todos los clientes de la sala
+function broadcast(room, data, except = null) {
   const msg = JSON.stringify(data);
-  for (let [client, info] of clients.entries()) {
-    if (info.file === file && client.readyState === WebSocket.OPEN && client !== except) {
-      client.send(msg);
-    }
+  if (rooms[room]) {
+    rooms[room].forEach(client => {
+      if (client.readyState === WebSocket.OPEN && client !== except) {
+        client.send(msg);
+      }
+    });
   }
 }
 
