@@ -69,7 +69,7 @@ wss.on("connection", (ws) => {
         selection: data.selection
       }, ws);
     }
-    
+
     if (data.type === "save" && file) {
       fs.writeFile(file, data.content, (err) => {
         if (err) {
@@ -78,6 +78,45 @@ wss.on("connection", (ws) => {
           console.log(`${user} guardó ${file}`);
         }
       });
+    }
+
+    // 👇 INTEGRACIÓN NUEVA: Solicitud de contenido inicial
+    if (data.type === "get_content") {
+      const requestedFile = data.file;
+
+      if (files[requestedFile]) {
+        ws.send(JSON.stringify({
+          type: "initial_content",
+          user: data.user,
+          file: requestedFile,
+          content: files[requestedFile].content
+        }));
+      } else {
+        fs.readFile(requestedFile, "utf8", (err, fileContent) => {
+          if (err) {
+            console.error(`Error leyendo ${requestedFile}:`, err);
+            ws.send(JSON.stringify({
+              type: "initial_content",
+              user: data.user,
+              file: requestedFile,
+              content: ""
+            }));
+          } else {
+            files[requestedFile] = {
+              content: fileContent,
+              clients: new Set(),
+              cursors: new Map()
+            };
+
+            ws.send(JSON.stringify({
+              type: "initial_content",
+              user: data.user,
+              file: requestedFile,
+              content: fileContent
+            }));
+          }
+        });
+      }
     }
   });
 
